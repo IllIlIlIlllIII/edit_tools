@@ -5,7 +5,7 @@
 import { setEditedMessageId } from '../../../../script.js';
 import { executeSlashCommandsWithOptions } from '../../../slash-commands.js';
 
-const MODULE_NAME = "st-edit-tools";
+const MODULE_NAME = "edit-tools";
 const defaultSettings = {
     enableCut: true,
     enableEdit: true,
@@ -965,7 +965,7 @@ dbgBtn.addEventListener('click', () => {
     const cuts = document.querySelectorAll('.custom-cut-btn').length;
     const mesCount = document.querySelectorAll('.mes').length;
     alert(
-        '설정값: ' + SillyTavern.getContext().extensionSettings['st-edit-tools'].enableReplace + '\n' +
+        '설정값: ' + SillyTavern.getContext().extensionSettings['edit-tools'].enableReplace + '\n' +
         '코드 속 설정값: ' + settings.enableReplace + '\n' +
         '메시지 수: ' + mesCount + '\n' +
         '치환 버튼 수: ' + btns.length + '\n' +
