@@ -971,6 +971,9 @@ dbgBtn.addEventListener('click', () => {
         '치환 버튼 수: ' + btns.length + '\n' +
         '가위 버튼 수: ' + cuts + '\n' +
         '표시상태: ' + [...new Set(btns.map(b => b.style.display || '보임'))].join(', ')
+        '옛날 설정값: ' + JSON.stringify(SillyTavern.getContext().extensionSettings['st-edit-tools']?.enableReplace) + '\n' +
+        '메시지관리 버튼 수: ' + document.querySelectorAll('#mm_gen').length + '\n' +
+        '치환 팝업 수: ' + document.querySelectorAll('#rt-popup').length + '\n' +
     );
 });
 (document.getElementById('extensionsMenu') || document.body).appendChild(dbgBtn);
