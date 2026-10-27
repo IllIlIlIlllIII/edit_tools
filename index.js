@@ -57,10 +57,10 @@ jQuery(async () => {
             settings.enableManager = !!$(this).prop("checked");
             save(); applyManagerVisibility();
         });
-        $("#et_enable_replace").on("change", function () {
-            settings.enableReplace = !!$(this).prop("checked");
-            save(); applyReplaceVisibility();
-        });
+$("#et_enable_replace").on("change", function () {
+    getSettings().enableReplace = !!$(this).prop("checked");
+    save(); applyReplaceVisibility();
+});
         $("#et_follow_theme").on("change", function () {
             settings.followTheme = !!$(this).prop("checked");
             save(); applyThemeMode();
@@ -734,11 +734,12 @@ jQuery(async () => {
     // ═════════════════════════════════════════════
     // 🔄 파트 4: Replace Tool (텍스트 치환)
     // ═════════════════════════════════════════════
-    function applyReplaceVisibility() {
-        document.querySelectorAll('.rt-mes-btn').forEach(btn => {
-            btn.style.display = settings.enableReplace ? '' : 'none';
-        });
-    }
+function applyReplaceVisibility() {
+    const on = getSettings().enableReplace;   // 매번 최신 값 읽기
+    document.querySelectorAll('.rt-mes-btn').forEach(btn => {
+        btn.style.display = on ? '' : 'none';
+    });
+}
 
     function initReplaceTool() {
         const { getContext } = SillyTavern;
@@ -914,31 +915,35 @@ jQuery(async () => {
         document.getElementById("rt-exec").addEventListener("click", executeReplace);
         document.getElementById("rt-cut-infoblock").addEventListener("change", updatePreview);
 
-        function upsertReplaceButtons() {
-            document.querySelectorAll(".mes").forEach(mes => {
-                const mesId = mes.getAttribute("mesid");
-                if (!mesId || mes.querySelector(".rt-mes-btn")) return;
-                const target = mes.querySelector(".extraMesButtons");
-                if (!target) return;
-                const btn = document.createElement("div");
-                btn.className = "rt-mes-btn mes_button fa-solid fa-right-left";
-                btn.title = "텍스트 치환";
-                btn.style.display = settings.enableReplace ? '' : 'none';
-                btn.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); openRtPopup(mesId); });
-                target.prepend(btn);
-            });
-        }
+function upsertReplaceButtons() {
+    const on = getSettings().enableReplace;
+    document.querySelectorAll(".mes").forEach(mes => {
+        if (!mes.getAttribute("mesid") || mes.querySelector(".rt-mes-btn")) return;
+        const target = mes.querySelector(".extraMesButtons");
+        if (!target) return;
+        const btn = document.createElement("div");
+        btn.className = "rt-mes-btn mes_button fa-solid fa-right-left";
+        btn.title = "텍스트 치환";
+        btn.style.display = on ? '' : 'none';
+        btn.addEventListener("click", e => {
+            e.preventDefault(); e.stopPropagation();
+            const idNow = mes.getAttribute("mesid");   // 클릭 시점의 id 사용
+            if (idNow) openRtPopup(idNow);
+        });
+        target.prepend(btn);
+    });
+}
 
-        const chatEl = document.getElementById("chat");
-        if (chatEl) {
-            const observer = new MutationObserver(() => {
-                upsertReplaceButtons();
-                applyReplaceVisibility();
-            });
-            observer.observe(chatEl, { childList: true, subtree: true });
-            upsertReplaceButtons();
-            applyReplaceVisibility();
-        }
+const chatEl = document.getElementById("chat");
+if (chatEl) {
+    let rtTimer = null;
+    const observer = new MutationObserver(() => {
+        clearTimeout(rtTimer);
+        rtTimer = setTimeout(upsertReplaceButtons, 100);   // 디바운스, visibility 재적용은 제거
+    });
+    observer.observe(chatEl, { childList: true, subtree: true });
+    upsertReplaceButtons();
+}
 
         console.log("[Edit Tools] 🔄 텍스트 치환 활성화!");
     }
@@ -951,5 +956,24 @@ jQuery(async () => {
     initMessageManager();
     initReplaceTool();
 
+    // ── 🐞 임시 진단 버튼 (확인 끝나면 삭제) ──
+const dbgBtn = document.createElement('div');
+dbgBtn.className = 'list-group-item flex-container flexGap5 interactable';
+dbgBtn.innerHTML = '<i class="fa-solid fa-bug"></i> 치환 진단';
+dbgBtn.addEventListener('click', () => {
+    const btns = [...document.querySelectorAll('.rt-mes-btn')];
+    const cuts = document.querySelectorAll('.custom-cut-btn').length;
+    const mesCount = document.querySelectorAll('.mes').length;
+    alert(
+        '설정값: ' + SillyTavern.getContext().extensionSettings['st-edit-tools'].enableReplace + '\n' +
+        '코드 속 설정값: ' + settings.enableReplace + '\n' +
+        '메시지 수: ' + mesCount + '\n' +
+        '치환 버튼 수: ' + btns.length + '\n' +
+        '가위 버튼 수: ' + cuts + '\n' +
+        '표시상태: ' + [...new Set(btns.map(b => b.style.display || '보임'))].join(', ')
+    );
+});
+(document.getElementById('extensionsMenu') || document.body).appendChild(dbgBtn);
+    
     console.log("[Edit Tools] 로드 완료!");
 });
