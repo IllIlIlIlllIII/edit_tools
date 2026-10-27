@@ -1,0 +1,955 @@
+// ═══════════════════════════════════════════════════════
+// Edit Tools - 가위 + 미니 수정 + 메시지 관리 + 텍스트 치환 (SillyTavern Extension)
+// ═══════════════════════════════════════════════════════
+
+import { setEditedMessageId } from '../../../../script.js';
+import { executeSlashCommandsWithOptions } from '../../../slash-commands.js';
+
+const MODULE_NAME = "st-edit-tools";
+const defaultSettings = {
+    enableCut: true,
+    enableEdit: true,
+    enableManager: true,
+    enableReplace: true,
+    followTheme: false,
+    managerSort: 'oldest',
+};
+
+function getSettings() {
+    const { extensionSettings } = SillyTavern.getContext();
+    if (!extensionSettings[MODULE_NAME]) {
+        extensionSettings[MODULE_NAME] = structuredClone(defaultSettings);
+    }
+    const s = extensionSettings[MODULE_NAME];
+    for (const key of Object.keys(defaultSettings)) {
+        if (s[key] === undefined) s[key] = defaultSettings[key];
+    }
+    return s;
+}
+
+function save() {
+    const { saveSettingsDebounced } = SillyTavern.getContext();
+    saveSettingsDebounced();
+}
+
+jQuery(async () => {
+    console.log("[Edit Tools] 확장프로그램 로딩...");
+
+    const settings = getSettings();
+
+    // ── 설정 패널 HTML 로드 ──
+    function bindSettingsEvents() {
+        $("#et_enable_cut").prop("checked", settings.enableCut);
+        $("#et_enable_edit").prop("checked", settings.enableEdit);
+        $("#et_enable_manager").prop("checked", settings.enableManager);
+        $("#et_enable_replace").prop("checked", settings.enableReplace);
+        $("#et_follow_theme").prop("checked", settings.followTheme);
+
+        $("#et_enable_cut").on("change", function () {
+            settings.enableCut = !!$(this).prop("checked");
+            save(); applyCutVisibility();
+        });
+        $("#et_enable_edit").on("change", function () {
+            settings.enableEdit = !!$(this).prop("checked");
+            save(); applyEditVisibility();
+        });
+        $("#et_enable_manager").on("change", function () {
+            settings.enableManager = !!$(this).prop("checked");
+            save(); applyManagerVisibility();
+        });
+        $("#et_enable_replace").on("change", function () {
+            settings.enableReplace = !!$(this).prop("checked");
+            save(); applyReplaceVisibility();
+        });
+        $("#et_follow_theme").on("change", function () {
+            settings.followTheme = !!$(this).prop("checked");
+            save(); applyThemeMode();
+        });
+    }
+
+    try {
+        const extPath = `scripts/extensions/third-party/${MODULE_NAME}`;
+        const res = await fetch(`/${extPath}/Settings.html`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const html = await res.text();
+        $("#extensions_settings2").append(html);
+        bindSettingsEvents();
+        console.log("[Edit Tools] 설정 패널 로드 성공!");
+    } catch (e) {
+        console.warn("[Edit Tools] 설정 패널 로드 실패, HTML 직접 삽입...", e);
+        const fallbackHtml = `
+        <div class="edit-tools-settings">
+            <div class="inline-drawer">
+                <div class="inline-drawer-toggle inline-drawer-header">
+                    <b>Edit Tools 설정</b>
+                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                </div>
+                <div class="inline-drawer-content">
+                    <label class="checkbox_label" for="et_enable_cut">
+                        <input type="checkbox" id="et_enable_cut" />
+                        <span>가위 버튼 표시</span>
+                    </label>
+                    <label class="checkbox_label" for="et_enable_edit">
+                        <input type="checkbox" id="et_enable_edit" />
+                        <span>미니 수정 버튼 표시</span>
+                    </label>
+                    <label class="checkbox_label" for="et_enable_manager">
+                        <input type="checkbox" id="et_enable_manager" />
+                        <span>메시지 관리 버튼 표시</span>
+                    </label>
+                    <label class="checkbox_label" for="et_enable_replace">
+                        <input type="checkbox" id="et_enable_replace" />
+                        <span>텍스트 치환 버튼 표시</span>
+                    </label>
+                    <label class="checkbox_label" for="et_follow_theme">
+                        <input type="checkbox" id="et_follow_theme" />
+                        <span>실리태번 테마 따라가기</span>
+                    </label>
+                </div>
+            </div>
+        </div>`;
+        $("#extensions_settings2").append(fallbackHtml);
+        bindSettingsEvents();
+    }
+
+    function applyThemeMode() {
+        document.body.classList.toggle('et-follow-theme', settings.followTheme);
+    }
+
+    applyThemeMode();
+
+    // ═════════════════════════════════════════════
+    // ✂️ 파트 1: 가위(삭제) 버튼
+    // ═════════════════════════════════════════════
+    function applyCutVisibility() {
+        document.querySelectorAll('.custom-cut-btn').forEach(btn => {
+            btn.style.display = settings.enableCut ? '' : 'none';
+        });
+    }
+
+    function initCutButton() {
+        function upsertDeleteButtons() {
+            document.querySelectorAll('.mes').forEach(mes => {
+                const currentId = mes.getAttribute('mesid');
+                if (!currentId) return;
+
+                // 이미 삽입됐으면 스킵
+                if (mes.querySelector('.custom-cut-btn')) return;
+
+                const target = mes.querySelector('.extraMesButtons');
+                if (!target) return;
+
+                // 단일 구조 — ST 기본 버튼과 동일 패턴
+                const cutBtn = document.createElement('div');
+                cutBtn.className = 'custom-cut-btn mes_button fa-solid fa-scissors';
+                cutBtn.title = `${currentId}번 메시지 삭제`;
+                cutBtn.style.display = settings.enableCut ? '' : 'none';
+                cutBtn.addEventListener('click', e => {
+                    e.preventDefault(); e.stopPropagation();
+                    const idNow = mes.getAttribute('mesid');
+                    if (!idNow) return;
+
+                    const deleteBtn = mes.querySelector('.mes_edit_buttons .mes_edit_delete');
+                    if (!deleteBtn) {
+                        if (typeof toastr !== 'undefined') {
+                            toastr.warning('기본 삭제 버튼을 찾을 수 없어', 'Edit Tools', { timeOut: 2000 });
+                        }
+                        return;
+                    }
+
+                    setEditedMessageId(Number(idNow));
+                    deleteBtn.click();
+                });
+                target.prepend(cutBtn);
+            });
+        }
+        const chat = document.getElementById('chat');
+        if (!chat) return;
+        const observer = new MutationObserver(upsertDeleteButtons);
+        observer.observe(chat, { childList: true, subtree: true });
+        upsertDeleteButtons();
+        console.log("[Edit Tools] ✂️ 가위 버튼 활성화!");
+    }
+
+    // ═════════════════════════════════════════════
+    // ✏️ 파트 2: 미니 수정
+    // ═════════════════════════════════════════════
+    let editEnabled = settings.enableEdit;
+
+    function applyEditVisibility() {
+        editEnabled = settings.enableEdit;
+        const floatBtn = document.getElementById('pe-float-btn');
+        if (floatBtn && !editEnabled) floatBtn.style.display = 'none';
+    }
+
+    function initPartialEdit() {
+        const { getContext } = SillyTavern;
+
+        const editBtn = document.createElement('div');
+        editBtn.id = 'pe-float-btn';
+        editBtn.textContent = '✏️ 미니 수정';
+        document.body.appendChild(editBtn);
+
+        const bg = document.createElement('div');
+        bg.id = 'pe-bg';
+        document.body.appendChild(bg);
+
+        const popup = document.createElement('div');
+        popup.id = 'pe-popup';
+        popup.innerHTML = `
+            <div class="pe-hdr">
+                <span>미니 수정</span>
+                <span class="pe-badge" id="pe-badge"></span>
+            </div>
+            <div class="pe-orig-label">▼ 찾을 텍스트 (수정 가능)</div>
+            <textarea class="pe-orig" id="pe-orig" placeholder="원문에서 찾을 텍스트" rows="1"></textarea>
+            <textarea id="pe-ta" placeholder="바꿀 내용을 입력하세요..."></textarea>
+            <div class="pe-btns">
+                <div class="pe-b pe-b-save" id="pe-save">✔ 저장</div>
+                <div class="pe-b pe-b-del" id="pe-del">🗑 삭제</div>
+                <div class="pe-b pe-b-cancel" id="pe-cancel">✖ 취소</div>
+            </div>
+        `;
+        document.body.appendChild(popup);
+
+        const badgeEl = document.getElementById('pe-badge');
+        const origEl = document.getElementById('pe-orig');
+        const ta = document.getElementById('pe-ta');
+        const saveBtn = document.getElementById('pe-save');
+        const delBtn = document.getElementById('pe-del');
+        const cancelBtn = document.getElementById('pe-cancel');
+
+        let state = { selectedText: '', mesId: null };
+
+        function getRawText(mesId) {
+            try { const ctx = getContext(); if (ctx && ctx.chat && ctx.chat[mesId]) return ctx.chat[mesId].mes; } catch (e) {}
+            return null;
+        }
+
+        function getVariants(text) {
+            const v = [text];
+            if (text.includes('…')) v.push(text.replace(/\u2026/g, '...'));
+            if (text.includes('...')) v.push(text.replace(/\.\.\./g, '…'));
+            if (text.includes("'")) { v.push(text.replace(/'/g, '\u2018')); v.push(text.replace(/'/g, '\u2019')); }
+            if (text.includes('\u2018') || text.includes('\u2019')) v.push(text.replace(/[\u2018\u2019]/g, "'"));
+            if (text.includes('"')) { v.push(text.replace(/"/g, '\u201C')); v.push(text.replace(/"/g, '\u201D')); }
+            if (text.includes('\u201C') || text.includes('\u201D')) v.push(text.replace(/[\u201C\u201D]/g, '"'));
+            if (text.includes('--')) v.push(text.replace(/--/g, '\u2014'));
+            if (text.includes('\u2014')) v.push(text.replace(/\u2014/g, '--'));
+            if (text.includes('\u2013')) v.push(text.replace(/\u2013/g, '-'));
+            return v;
+        }
+
+        function findWithMarkdown(raw, text) {
+            const mds = ['***', '**', '*', '__', '_', '~~'];
+            for (const md of mds) {
+                let s = md + text + md, idx = raw.indexOf(s);
+                if (idx !== -1) return { index: idx, matched: s };
+                const ep = text.match(/^(.+?)([.!?,;:'")\]}>…]+)$/);
+                if (ep) { s = md + ep[1] + md + ep[2]; idx = raw.indexOf(s); if (idx !== -1) return { index: idx, matched: s }; }
+                const sp = text.match(/^([.!?,;:'"(\[{<…]+)(.+)$/);
+                if (sp) { s = sp[1] + md + sp[2] + md; idx = raw.indexOf(s); if (idx !== -1) return { index: idx, matched: s }; }
+                const si = text.indexOf(' ');
+                if (si > 0) {
+                    const f = text.substring(0, si), r = text.substring(si);
+                    const fp = f.match(/^(.+?)([.!?,;:]+)$/);
+                    s = fp ? md + fp[1] + md + fp[2] + r : md + f + md + r;
+                    idx = raw.indexOf(s); if (idx !== -1) return { index: idx, matched: s };
+                    const li = text.lastIndexOf(' ');
+                    s = text.substring(0, li + 1) + md + text.substring(li + 1) + md;
+                    idx = raw.indexOf(s); if (idx !== -1) return { index: idx, matched: s };
+                }
+            }
+            return null;
+        }
+
+        function findInRaw(raw, sel) {
+            const vars = getVariants(sel);
+            for (const v of vars) { const i = raw.indexOf(v); if (i !== -1) return { index: i, matched: v }; }
+            for (const v of vars) { const r = findWithMarkdown(raw, v); if (r) return r; }
+            return null;
+        }
+
+        function updateDOM(ctx, mesId, updated) {
+            const el = document.querySelector('.mes[mesid="' + mesId + '"]');
+            if (!el) return;
+            const mt = el.querySelector('.mes_text');
+            if (!mt) return;
+            try {
+                if (typeof ctx.messageFormatting === 'function') {
+                    const c = ctx.chat[mesId];
+                    mt.innerHTML = ctx.messageFormatting(updated, c.name, c.is_system, c.is_user, mesId);
+                } else { mt.innerHTML = updated.replace(/\n/g, '<br>'); }
+            } catch (e) { mt.innerHTML = updated.replace(/\n/g, '<br>'); }
+        }
+
+        function doSaveChat(ctx) {
+            if (typeof ctx.saveChatDebounced === 'function') ctx.saveChatDebounced();
+            else if (typeof ctx.saveChat === 'function') ctx.saveChat();
+        }
+
+        function applyEditDirect(mesId, index, length, newText) {
+            try {
+                const ctx = getContext();
+                if (!ctx || !ctx.chat || !ctx.chat[mesId]) return false;
+                const o = ctx.chat[mesId].mes;
+                const u = o.substring(0, index) + newText + o.substring(index + length);
+                ctx.chat[mesId].mes = u; updateDOM(ctx, mesId, u); doSaveChat(ctx); return true;
+            } catch (e) { console.error("[Edit Tools]", e); return false; }
+        }
+
+        function toast(msg) {
+            try { if (typeof toastr !== 'undefined') { toastr.success(msg, 'Edit Tools', { timeOut: 2000 }); return; } } catch (e) {}
+            console.log("[Edit Tools] " + msg);
+        }
+
+        const chatEl = document.getElementById('chat');
+        if (!chatEl) return;
+
+        function findMes(n) { if (!n) return null; let el = n.nodeType === Node.TEXT_NODE ? n.parentElement : n; return el ? el.closest('.mes') : null; }
+
+        function onSelect() {
+            if (!editEnabled) { editBtn.style.display = 'none'; return; }
+            if (_justClosed) { editBtn.style.display = 'none'; return; }
+            if (bg.classList.contains('pe-show')) return;
+            const sel = window.getSelection();
+            if (!sel || sel.rangeCount === 0 || !sel.toString().trim()) { editBtn.style.display = 'none'; return; }
+            const text = sel.toString().trim();
+            const aM = findMes(sel.anchorNode), fM = findMes(sel.focusNode);
+            if (!aM || !fM) { editBtn.style.display = 'none'; return; }
+            if (aM.getAttribute('mesid') !== fM.getAttribute('mesid')) { editBtn.style.display = 'none'; return; }
+            const mt = aM.querySelector('.mes_text');
+            if (!mt || !mt.contains(sel.anchorNode)) { editBtn.style.display = 'none'; return; }
+            state.selectedText = text;
+            state.mesId = parseInt(aM.getAttribute('mesid'), 10);
+            const rect = sel.getRangeAt(0).getBoundingClientRect();
+            let l = rect.left + rect.width / 2 - 55;
+            l = Math.max(8, Math.min(l, window.innerWidth - 120));
+            let t = rect.bottom + 22;
+            if (t + 40 > window.innerHeight) t = rect.top - 50;
+            editBtn.style.left = l + 'px'; editBtn.style.top = t + 'px'; editBtn.style.display = 'block';
+        }
+
+        chatEl.addEventListener('mouseup', e => { if (editBtn.contains(e.target)) return; setTimeout(onSelect, 80); });
+        chatEl.addEventListener('touchend', e => { if (editBtn.contains(e.target)) return; setTimeout(onSelect, 350); });
+        document.addEventListener('selectionchange', () => {
+            if (bg.classList.contains('pe-show')) return;
+            clearTimeout(window.__peSelTimer);
+            window.__peSelTimer = setTimeout(() => {
+                const s = window.getSelection();
+                if (!s || !s.toString().trim()) editBtn.style.display = 'none'; else onSelect();
+            }, 200);
+        });
+
+        function posPopup() {
+            const vv = window.visualViewport;
+            const vH = vv ? vv.height : window.innerHeight, vT = vv ? vv.offsetTop : 0, vW = vv ? vv.width : window.innerWidth;
+            popup.style.display = 'block'; popup.style.visibility = 'hidden';
+            const pH = popup.offsetHeight, pW = popup.offsetWidth;
+            popup.style.visibility = 'visible';
+            popup.style.top = (vT + Math.max(10, (vH - pH) / 2)) + 'px';
+            popup.style.left = Math.max(5, (vW - pW) / 2) + 'px';
+        }
+
+        function autoR(el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
+
+        function openPopup() {
+            if (_justClosed) return;
+            editBtn.style.display = 'none';
+            if (!state.selectedText || state.mesId === null) return;
+            origEl.value = state.selectedText; ta.value = state.selectedText;
+            const raw = getRawText(state.mesId);
+            if (raw !== null) {
+                const f = findInRaw(raw, state.selectedText);
+                if (f) {
+                    const cnt = raw.split(f.matched).length - 1;
+                    if (cnt === 1) { badgeEl.textContent = '매칭 성공'; badgeEl.style.background = '#2ecc71'; }
+                    else { badgeEl.textContent = cnt + '개 (첫번째)'; badgeEl.style.background = '#f39c12'; }
+                } else { badgeEl.textContent = '매칭 실패'; badgeEl.style.background = '#e74c3c'; }
+            } else { badgeEl.textContent = '실패'; badgeEl.style.background = '#e74c3c'; }
+            bg.classList.add('pe-show'); popup.classList.add('pe-show');
+            window.getSelection().removeAllRanges();
+            posPopup(); autoR(origEl);
+            setTimeout(() => { autoR(origEl); posPopup(); }, 50);
+            setTimeout(() => ta.focus(), 100);
+            setTimeout(posPopup, 200);
+        }
+
+        let _justClosed = false;
+        let _lastAction = 0;
+
+        function closePopup() {
+            bg.classList.remove('pe-show'); popup.classList.remove('pe-show');
+            popup.style.display = 'none'; ta.value = ''; origEl.value = '';
+            state = { selectedText: '', mesId: null };
+            try { window.getSelection().removeAllRanges(); } catch (e) {}
+            editBtn.style.display = 'none';
+            _justClosed = true;
+            _lastAction = Date.now();
+            setTimeout(() => { _justClosed = false; }, 1000);
+        }
+
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', () => { if (popup.classList.contains('pe-show')) posPopup(); });
+            window.visualViewport.addEventListener('scroll', () => { if (popup.classList.contains('pe-show')) posPopup(); });
+        }
+
+        editBtn.addEventListener('click', e => {
+            e.preventDefault(); e.stopPropagation();
+            if (_justClosed || Date.now() - _lastAction < 1000) return;
+            openPopup();
+        });
+        editBtn.addEventListener('touchend', e => {
+            e.preventDefault(); e.stopPropagation();
+            if (_justClosed || Date.now() - _lastAction < 1000) return;
+            openPopup();
+        });
+        bg.addEventListener('click', closePopup);
+        bg.addEventListener('touchend', e => { e.preventDefault(); closePopup(); });
+
+        function updateBadge() {
+            const raw = getRawText(state.mesId);
+            if (!raw) { badgeEl.textContent = '실패'; badgeEl.style.background = '#e74c3c'; return; }
+            const f = findInRaw(raw, origEl.value);
+            if (f) { badgeEl.textContent = '매칭 성공'; badgeEl.style.background = '#2ecc71'; }
+            else { badgeEl.textContent = '매칭 실패'; badgeEl.style.background = '#e74c3c'; }
+        }
+        ta.addEventListener('input', updateBadge);
+        origEl.addEventListener('input', () => { updateBadge(); autoR(origEl); });
+
+        function doSave() {
+            const nw = ta.value, sk = origEl.value, raw = getRawText(state.mesId);
+            if (!raw) { toast("수정 실패 ㅠ"); closePopup(); return; }
+            const f = findInRaw(raw, sk);
+            if (f) { if (f.matched === nw) { closePopup(); return; } toast(applyEditDirect(state.mesId, f.index, f.matched.length, nw) ? "수정 완료!" : "수정 실패 ㅠ"); closePopup(); return; }
+            toast("수정 실패 - 매칭 안 됨 ㅠ"); closePopup();
+        }
+        function doDelete() {
+            const p = state.selectedText.length > 30 ? state.selectedText.substring(0, 30) + '...' : state.selectedText;
+            if (!confirm('삭제?\n"' + p + '"')) return;
+            const raw = getRawText(state.mesId);
+            if (!raw) { toast("삭제 실패 ㅠ"); closePopup(); return; }
+            const f = findInRaw(raw, state.selectedText);
+            if (f) toast(applyEditDirect(state.mesId, f.index, f.matched.length, '') ? "삭제 완료!" : "삭제 실패 ㅠ");
+            else toast("삭제 실패 - 매칭 안 됨 ㅠ");
+            closePopup();
+        }
+
+        function guardAction(fn) {
+            return function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (Date.now() - _lastAction < 1000) return;
+                fn();
+            };
+        }
+
+        saveBtn.addEventListener('click', guardAction(doSave));
+        saveBtn.addEventListener('touchend', guardAction(doSave));
+        delBtn.addEventListener('click', guardAction(doDelete));
+        delBtn.addEventListener('touchend', guardAction(doDelete));
+        cancelBtn.addEventListener('click', guardAction(closePopup));
+        cancelBtn.addEventListener('touchend', guardAction(closePopup));
+        ta.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveBtn.click(); }
+            if (e.key === 'Escape') { e.preventDefault(); closePopup(); }
+        });
+        console.log("[Edit Tools] ✏️ 미니 수정 활성화!");
+    }
+
+    // ═════════════════════════════════════════════
+    // 📋 파트 3: 메시지 관리 패널
+    // ═════════════════════════════════════════════
+    function applyManagerVisibility() {
+        const btn = document.getElementById('mm_gen');
+        if (btn) btn.style.display = settings.enableManager ? '' : 'none';
+    }
+
+    function initMessageManager() {
+        const { getContext } = SillyTavern;
+
+        // ── 하단 바에 네이티브 스타일 버튼 삽입 ──
+        const openBtn = document.createElement('div');
+        openBtn.id = 'mm_gen';
+        openBtn.className = 'list-group-item flex-container flexGap5 interactable';
+        openBtn.title = '메시지 관리';
+        openBtn.innerHTML = '<i class="fa-solid fa-list-check"></i> 메시지 관리';
+        openBtn.style.display = settings.enableManager ? '' : 'none';
+
+        const sdGen = document.getElementById('sd_gen');
+        const extMenu = document.getElementById('extensionsMenu');
+        if (sdGen && sdGen.parentNode) {
+            sdGen.parentNode.insertBefore(openBtn, sdGen.nextSibling);
+        } else if (extMenu) {
+            extMenu.appendChild(openBtn);
+        } else {
+            const wand = document.getElementById('data_bank_wand_container');
+            if (wand && wand.parentNode) {
+                wand.parentNode.insertBefore(openBtn, wand.nextSibling);
+            } else {
+                document.body.appendChild(openBtn);
+            }
+        }
+
+        // ── 배경 ──
+        const mmBg = document.createElement('div');
+        mmBg.id = 'mm-bg';
+        document.body.appendChild(mmBg);
+
+        // ── 패널 ──
+        const panel = document.createElement('div');
+        panel.id = 'mm-panel';
+        panel.innerHTML = `
+            <div class="mm-header">
+                <span class="mm-title">📋 메시지 관리</span>
+                <span class="mm-close" id="mm-close">✕</span>
+            </div>
+            <div class="mm-toolbar">
+                <div class="mm-tb-btn" id="mm-sort" title="메시지 표시 순서">정렬: 오래된순</div>
+                <div class="mm-tb-btn" id="mm-sel-all">전체선택</div>
+                <div class="mm-tb-btn" id="mm-sel-none">선택해제</div>
+                <div class="mm-tb-btn mm-tb-hide" id="mm-do-hide">👁 숨기기</div>
+                <div class="mm-tb-btn mm-tb-unhide" id="mm-do-unhide">👁‍🗨 숨기기해제</div>
+                <div class="mm-tb-btn mm-tb-del" id="mm-do-del">🗑 삭제</div>
+            </div>
+            <div class="mm-info" id="mm-info">0개 선택됨</div>
+            <div class="mm-list" id="mm-list"></div>
+        `;
+        document.body.appendChild(panel);
+
+        const listEl = document.getElementById('mm-list');
+        const infoEl = document.getElementById('mm-info');
+        const sortBtn = document.getElementById('mm-sort');
+        let selected = new Set();
+        let sortOrder = settings.managerSort === 'newest' ? 'newest' : 'oldest';
+
+        function updateInfo() { infoEl.textContent = `${selected.size}개 선택됨`; }
+
+        function updateSortButton() {
+            sortBtn.textContent = `정렬: ${sortOrder === 'newest' ? '최신순' : '오래된순'}`;
+        }
+
+        function escHtml(s) {
+            return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        function buildList() {
+            const ctx = getContext();
+            if (!ctx || !ctx.chat) return;
+            listEl.innerHTML = '';
+            selected.clear();
+            updateInfo();
+
+            const messages = ctx.chat.map((msg, idx) => ({ msg, idx }));
+            if (sortOrder === 'newest') messages.reverse();
+
+            messages.forEach(({ msg, idx }) => {
+                const row = document.createElement('div');
+                row.className = 'mm-row';
+                // ST는 숨김 상태를 is_hidden이 아니라 is_system으로 저장함.
+                // /hide, /unhide 둘 다 결국 is_system 값만 토글하는 거라 이걸로 잡아야
+                // 메시지관리에서 숨긴 거든 다른 데서 숨긴 거든 다 표시됨.
+                const isHidden = !!msg.is_system;
+                const name = msg.name || (msg.is_user ? 'You' : 'System');
+                const preview = (msg.mes || '').replace(/\n/g, ' ');
+                const short = preview.length > 50 ? preview.substring(0, 50) + '…' : preview;
+
+                row.innerHTML = `
+                    <label class="mm-cb-wrap"><input type="checkbox" class="mm-cb" data-idx="${idx}" /></label>
+                    <span class="mm-idx">#${idx}</span>
+                    ${isHidden ? '<i class="fa-solid fa-ghost mm-ghost" title="숨김 처리됨"></i>' : ''}
+                    <span class="mm-name ${msg.is_user ? 'mm-name-user' : 'mm-name-char'}">${escHtml(name)}</span>
+                    <span class="mm-preview">${escHtml(short)}</span>
+                    ${isHidden ? '<span class="mm-hidden-tag">숨김</span>' : ''}
+                    <button type="button" class="mm-jump" title="#${idx} 메시지로 이동" aria-label="#${idx} 메시지로 이동"><i class="fa-solid fa-arrow-right" aria-hidden="true"></i></button>
+                `;
+                if (isHidden) row.classList.add('mm-row-hidden');
+
+                const cb = row.querySelector('.mm-cb');
+                cb.addEventListener('change', () => {
+                    if (cb.checked) selected.add(idx); else selected.delete(idx);
+                    updateInfo();
+                });
+                row.addEventListener('click', (e) => {
+                    if (e.target === cb || e.target.closest('.mm-cb-wrap, .mm-jump')) return;
+                    cb.checked = !cb.checked;
+                    cb.dispatchEvent(new Event('change'));
+                });
+                row.querySelector('.mm-jump').addEventListener('click', async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    closeManager();
+                    try {
+                        await executeSlashCommandsWithOptions(`/chat-jump ${idx}`);
+                    } catch (error) {
+                        console.error('[Edit Tools] 메시지 이동 실패:', error);
+                        if (typeof toastr !== 'undefined') toastr.error('메시지 이동에 실패했어. /chat-jump 명령어를 사용할 수 있는지 확인해 줘.', 'Edit Tools');
+                    }
+                });
+                listEl.appendChild(row);
+            });
+        }
+
+        updateSortButton();
+
+        sortBtn.addEventListener('click', () => {
+            sortOrder = sortOrder === 'oldest' ? 'newest' : 'oldest';
+            settings.managerSort = sortOrder;
+            save();
+            updateSortButton();
+            buildList();
+        });
+
+        function positionPanel() {
+            const vv = window.visualViewport;
+            const vH = vv ? vv.height : window.innerHeight;
+            const vT = vv ? vv.offsetTop : 0;
+            const vW = vv ? vv.width : window.innerWidth;
+
+            panel.style.display = 'flex';
+            panel.style.visibility = 'hidden';
+            // CSS transform 제거하고 직접 계산
+            panel.style.transform = 'none';
+            const pH = panel.offsetHeight;
+            const pW = panel.offsetWidth;
+            panel.style.visibility = 'visible';
+
+            const topVal = vT + Math.max(10, (vH - pH) / 2);
+            const leftVal = Math.max(5, (vW - pW) / 2);
+            panel.style.top = topVal + 'px';
+            panel.style.left = leftVal + 'px';
+        }
+
+        function openManager() {
+            buildList();
+            mmBg.classList.add('mm-show');
+            panel.classList.add('mm-show');
+            positionPanel();
+            setTimeout(() => { if (panel.classList.contains('mm-show')) positionPanel(); }, 100);
+        }
+        function closeManager() {
+            mmBg.classList.remove('mm-show');
+            panel.classList.remove('mm-show');
+            panel.style.display = 'none';
+            selected.clear();
+        }
+
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', () => { if (panel.classList.contains('mm-show')) positionPanel(); });
+            window.visualViewport.addEventListener('scroll', () => { if (panel.classList.contains('mm-show')) positionPanel(); });
+        }
+
+        openBtn.addEventListener('click', openManager);
+        document.getElementById('mm-close').addEventListener('click', closeManager);
+        mmBg.addEventListener('click', closeManager);
+
+        document.getElementById('mm-sel-all').addEventListener('click', () => {
+            listEl.querySelectorAll('.mm-cb').forEach(cb => { cb.checked = true; selected.add(parseInt(cb.dataset.idx, 10)); });
+            updateInfo();
+        });
+        document.getElementById('mm-sel-none').addEventListener('click', () => {
+            listEl.querySelectorAll('.mm-cb').forEach(cb => { cb.checked = false; });
+            selected.clear(); updateInfo();
+        });
+
+        // ── 연속된 id를 [start, end] 범위로 묶기 (끊기면 새 구간) ──
+        function groupRanges(ids) {
+            const sorted = [...new Set(ids)].sort((a, b) => a - b);
+            const ranges = [];
+            if (sorted.length === 0) return ranges;
+            let start = sorted[0], prev = sorted[0];
+            for (let i = 1; i < sorted.length; i++) {
+                if (sorted[i] === prev + 1) { prev = sorted[i]; }
+                else { ranges.push([start, prev]); start = prev = sorted[i]; }
+            }
+            ranges.push([start, prev]);
+            return ranges;
+        }
+        // [s, e] → "1-3" 또는 (단일이면) "7"
+        function rangeArg([s, e]) { return s === e ? `${s}` : `${s}-${e}`; }
+
+        // 명령 인자 배열을 순차 실행 (각 500ms 간격, 완료 후 원래 입력 복원)
+        function runCommands(cmd, args, onDone) {
+            const textarea = document.getElementById('send_textarea');
+            const sendBtn = document.getElementById('send_but');
+            if (!textarea || !sendBtn) return;
+            const backup = textarea.value;
+            let i = 0;
+            (function doNext() {
+                if (i >= args.length) {
+                    setTimeout(() => {
+                        textarea.value = backup;
+                        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                        if (onDone) onDone();
+                    }, 300);
+                    return;
+                }
+                textarea.value = `${cmd} ${args[i]}`;
+                textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                sendBtn.click();
+                i++;
+                setTimeout(doNext, 500);
+            })();
+        }
+
+        // ── 숨기기 ── (연속 구간은 /hide 1-3 로 묶고, 끊기면 각각)
+        document.getElementById('mm-do-hide').addEventListener('click', () => {
+            if (selected.size === 0) return;
+            const count = selected.size;
+            const args = groupRanges([...selected]).map(rangeArg);
+            runCommands('/hide', args, () => {
+                if (typeof toastr !== 'undefined') toastr.success(`${count}개 숨기기 완료! (명령 ${args.length}회)`, 'Edit Tools', { timeOut: 2000 });
+                buildList();
+            });
+        });
+
+        // ── 숨기기 해제 (/unhide) ── (연속 구간 묶음)
+        document.getElementById('mm-do-unhide').addEventListener('click', () => {
+            if (selected.size === 0) return;
+            const count = selected.size;
+            const args = groupRanges([...selected]).map(rangeArg);
+            runCommands('/unhide', args, () => {
+                if (typeof toastr !== 'undefined') toastr.success(`${count}개 숨기기 해제! (명령 ${args.length}회)`, 'Edit Tools', { timeOut: 2000 });
+                buildList();
+            });
+        });
+
+        // ── 삭제 ── (연속 구간은 /cut 1-3 로 묶음. 삭제는 인덱스 밀림 방지 위해 높은 구간부터)
+        document.getElementById('mm-do-del').addEventListener('click', () => {
+            if (selected.size === 0) return;
+            const count = selected.size;
+            const sortedIds = [...selected].sort((a, b) => a - b);
+            if (!confirm(`${count}개 메시지를 삭제할까?\n(#${sortedIds[0]} ~ #${sortedIds[sortedIds.length - 1]})`)) return;
+            // 구간별로 묶은 뒤, 시작 번호 큰 구간부터 삭제해야 아래쪽 번호가 안 밀림
+            const args = groupRanges(sortedIds).sort((a, b) => b[0] - a[0]).map(rangeArg);
+            runCommands('/cut', args, () => {
+                if (typeof toastr !== 'undefined') toastr.success(`${count}개 삭제 완료! (명령 ${args.length}회)`, 'Edit Tools', { timeOut: 2000 });
+                closeManager();
+            });
+        });
+
+        console.log("[Edit Tools] 📋 메시지 관리 활성화!");
+    }
+
+    // ═════════════════════════════════════════════
+    // 🔄 파트 4: Replace Tool (텍스트 치환)
+    // ═════════════════════════════════════════════
+    function applyReplaceVisibility() {
+        document.querySelectorAll('.rt-mes-btn').forEach(btn => {
+            btn.style.display = settings.enableReplace ? '' : 'none';
+        });
+    }
+
+    function initReplaceTool() {
+        const { getContext } = SillyTavern;
+
+        const rtPopupHtml = `
+        <div id="rt-bg"></div>
+        <div id="rt-popup">
+            <div class="rt-header">
+                <span>🔄 텍스트 치환</span>
+                <span class="rt-msg-badge" id="rt-msg-badge"></span>
+                <span class="rt-close" id="rt-close">✕</span>
+            </div>
+            <div class="rt-body">
+                <div id="rt-rules"></div>
+                <div class="rt-options">
+                    <label class="rt-opt-label">
+                        <input type="checkbox" id="rt-cut-infoblock" />
+                        <span>&lt;infoblock&gt; 위까지만 치환</span>
+                    </label>
+                </div>
+                <div class="rt-actions">
+                    <div class="rt-btn rt-btn-add" id="rt-add">+ 규칙 추가</div>
+                    <div class="rt-btn rt-btn-exec" id="rt-exec">🚀 치환 실행</div>
+                </div>
+                <div class="rt-preview-section">
+                    <label>미리보기</label>
+                    <div id="rt-preview" class="rt-preview"></div>
+                </div>
+            </div>
+        </div>`;
+        $("body").append(rtPopupHtml);
+
+        const rtBgEl = document.getElementById("rt-bg");
+        const rtPopupEl = document.getElementById("rt-popup");
+        const rulesEl = document.getElementById("rt-rules");
+        const previewEl = document.getElementById("rt-preview");
+        const badgeEl = document.getElementById("rt-msg-badge");
+
+        let currentMesId = null;
+
+        function addRule(findVal, replaceVal) {
+            const rule = document.createElement("div");
+            rule.className = "rt-rule";
+            rule.innerHTML = `
+                <textarea class="rt-find" placeholder="찾을 텍스트" rows="1">${findVal || ""}</textarea>
+                <textarea class="rt-replace" placeholder="바꿀 텍스트 (비우면 삭제)" rows="1">${replaceVal || ""}</textarea>
+                <div class="rt-rule-del" title="규칙 삭제">✕</div>
+            `;
+            rule.querySelector(".rt-find").addEventListener("input", updatePreview);
+            rule.querySelector(".rt-replace").addEventListener("input", updatePreview);
+            rule.querySelector(".rt-rule-del").addEventListener("click", () => {
+                rule.remove();
+                updatePreview();
+            });
+            rulesEl.appendChild(rule);
+        }
+
+        function getRules() {
+            const rules = [];
+            rulesEl.querySelectorAll(".rt-rule").forEach(el => {
+                const find = el.querySelector(".rt-find").value;
+                const replace = el.querySelector(".rt-replace").value;
+                if (find) rules.push({ find, replace });
+            });
+            return rules;
+        }
+
+        function applyRules(text, rules) {
+            const cutInfoblock = document.getElementById("rt-cut-infoblock").checked;
+            let target = text, suffix = "";
+            if (cutInfoblock) {
+                const idx = text.indexOf("<infoblock>");
+                if (idx !== -1) { target = text.substring(0, idx); suffix = text.substring(idx); }
+            }
+            for (const r of rules) { target = target.split(r.find).join(r.replace); }
+            return target + suffix;
+        }
+
+        function buildHighlightedPreview(text, rules) {
+            const cutInfoblock = document.getElementById("rt-cut-infoblock").checked;
+            let target = text, suffix = "";
+            if (cutInfoblock) {
+                const idx = text.indexOf("<infoblock>");
+                if (idx !== -1) { target = text.substring(0, idx); suffix = text.substring(idx); }
+            }
+            const findTerms = rules.map(r => r.find).filter(f => f.length > 0);
+            if (findTerms.length === 0) return escapeHtml(target) + escapeHtml(suffix);
+            const escaped = findTerms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+            const regex = new RegExp("(" + escaped.join("|") + ")", "g");
+            const parts = target.split(regex);
+            const findSet = new Set(findTerms);
+            let html = "";
+            for (const part of parts) {
+                html += findSet.has(part) ? '<span class="rt-hl">' + escapeHtml(part) + "</span>" : escapeHtml(part);
+            }
+            return html + escapeHtml(suffix);
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+        }
+
+        function getRawText(mesId) {
+            try { const ctx = getContext(); if (ctx?.chat?.[mesId]) return ctx.chat[mesId].mes; } catch {}
+            return null;
+        }
+
+        function updatePreview() {
+            const raw = getRawText(currentMesId);
+            if (!raw) return;
+            previewEl.innerHTML = buildHighlightedPreview(raw, getRules());
+        }
+
+        function updateDOM(ctx, mesId, newText) {
+            const el = document.querySelector('.mes[mesid="' + mesId + '"]');
+            if (!el) return;
+            const mt = el.querySelector(".mes_text");
+            if (!mt) return;
+            try {
+                if (typeof ctx.messageFormatting === "function") {
+                    const c = ctx.chat[mesId];
+                    mt.innerHTML = ctx.messageFormatting(newText, c.name, c.is_system, c.is_user, mesId);
+                } else { mt.innerHTML = newText.replace(/\n/g, "<br>"); }
+            } catch { mt.innerHTML = newText.replace(/\n/g, "<br>"); }
+        }
+
+        function doSaveChat(ctx) {
+            if (typeof ctx.saveChatDebounced === "function") ctx.saveChatDebounced();
+            else if (typeof ctx.saveChat === "function") ctx.saveChat();
+        }
+
+        function rtPosPopup() { rtPopupEl.style.display = "flex"; }
+
+        function openRtPopup(mesId) {
+            currentMesId = Number(mesId);
+            rulesEl.innerHTML = "";
+            addRule();
+            const raw = getRawText(currentMesId);
+            previewEl.innerHTML = raw ? escapeHtml(raw) : "(텍스트 없음)";
+            badgeEl.textContent = "#" + currentMesId;
+            rtBgEl.classList.add("rt-show");
+            rtPopupEl.classList.add("rt-show");
+            rtPosPopup();
+            setTimeout(rtPosPopup, 100);
+        }
+
+        function closeRtPopup() {
+            rtBgEl.classList.remove("rt-show");
+            rtPopupEl.classList.remove("rt-show");
+            rtPopupEl.style.display = "none";
+            currentMesId = null;
+        }
+
+        function executeReplace() {
+            const ctx = getContext();
+            if (!ctx?.chat || currentMesId === null) return;
+            const msg = ctx.chat[currentMesId];
+            if (!msg) return;
+            const rules = getRules();
+            if (rules.length === 0) { toastr.warning("치환 규칙을 입력해주세요."); return; }
+            const newText = applyRules(msg.mes, rules);
+            if (newText === msg.mes) { toastr.info("변경된 내용이 없습니다."); return; }
+            ctx.chat[currentMesId].mes = newText;
+            updateDOM(ctx, currentMesId, newText);
+            doSaveChat(ctx);
+            toastr.success("치환 완료! (" + rules.length + "개 규칙)", "Edit Tools", { timeOut: 2000 });
+            closeRtPopup();
+        }
+
+        document.getElementById("rt-close").addEventListener("click", closeRtPopup);
+        rtBgEl.addEventListener("click", closeRtPopup);
+        document.getElementById("rt-add").addEventListener("click", () => addRule());
+        document.getElementById("rt-exec").addEventListener("click", executeReplace);
+        document.getElementById("rt-cut-infoblock").addEventListener("change", updatePreview);
+
+        function upsertReplaceButtons() {
+            document.querySelectorAll(".mes").forEach(mes => {
+                const mesId = mes.getAttribute("mesid");
+                if (!mesId || mes.querySelector(".rt-mes-btn")) return;
+                const target = mes.querySelector(".extraMesButtons");
+                if (!target) return;
+                const btn = document.createElement("div");
+                btn.className = "rt-mes-btn mes_button fa-solid fa-right-left";
+                btn.title = "텍스트 치환";
+                btn.style.display = settings.enableReplace ? '' : 'none';
+                btn.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); openRtPopup(mesId); });
+                target.prepend(btn);
+            });
+        }
+
+        const chatEl = document.getElementById("chat");
+        if (chatEl) {
+            const observer = new MutationObserver(() => {
+                upsertReplaceButtons();
+                applyReplaceVisibility();
+            });
+            observer.observe(chatEl, { childList: true, subtree: true });
+            upsertReplaceButtons();
+            applyReplaceVisibility();
+        }
+
+        console.log("[Edit Tools] 🔄 텍스트 치환 활성화!");
+    }
+
+    // ═════════════════════════════════════════════
+    // 🚀 초기화
+    // ═════════════════════════════════════════════
+    initCutButton();
+    initPartialEdit();
+    initMessageManager();
+    initReplaceTool();
+
+    console.log("[Edit Tools] 로드 완료!");
+});
